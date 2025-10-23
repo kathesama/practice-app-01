@@ -2,12 +2,16 @@ pipeline {
   agent any
 
   environment {
-    // Jenkins (en Docker) hablará con Docker Desktop por TCP (ya lo habilitaste)
+    // Jenkins (en Docker) habla con tu Docker Desktop por TCP 2375
     DOCKER_HOST = "tcp://host.docker.internal:2375"
-    IMAGE       = "practice-app-01:latest"
-    CONTAINER   = "practice-app-01"
-    PORT_HOST   = "8081"  // cambia si querés otro puerto local
-    PORT_CONT   = "80"    // Nginx expone 80 en el contenedor
+
+    APP_NAME   = "practice-app-01"
+    IMAGE_LATEST = "${APP_NAME}:latest"
+    IMAGE_SHA    = "${APP_NAME}:sha-${env.GIT_COMMIT}"
+
+    CONTAINER = "${APP_NAME}"
+    PORT_HOST = "8081"  // cambia si querés otro puerto local
+    PORT_CONT = "80"    // Nginx expone 80 en la imagen final
   }
 
   stages {
@@ -15,32 +19,51 @@ pipeline {
       steps { checkout scm }
     }
 
-    stage('Install & Build') {
+    stage('NPM validate (in Docker)') {
       steps {
+        // Ejecuta npm dentro de un contenedor node:20-alpine; no instala nada en Jenkins
         sh '''
-          npm ci
-          npm run build
+          set -eux
+          docker run --rm \
+            -v "$PWD":/app -w /app \
+            -e CI=true \
+            node:20-alpine sh -lc "
+              npm ci &&
+              npm run build
+            "
         '''
       }
     }
 
     stage('Docker Build') {
       steps {
+        // Construye la imagen usando TU Dockerfile (multi-stage: node -> nginx)
         sh '''
-          docker build -t ${IMAGE} .
+          set -eux
+          docker build -t ${IMAGE_LATEST} -t ${IMAGE_SHA} .
         '''
       }
     }
 
+    // (Opcional) Escaneo rápido de vulnerabilidades con Trivy
+    // stage('Security scan (Trivy)') {
+    //   steps {
+    //     sh '''
+    //       docker run --rm aquasec/trivy:latest image \
+    //         --severity HIGH,CRITICAL --no-progress ${IMAGE_LATEST} || true
+    //     '''
+    //   }
+    // }
+
     stage('Deploy Local') {
       steps {
+        // Reemplaza el contenedor local por la nueva versión
         sh '''
-          # si existe una versión vieja, detener y remover
-          docker ps -q --filter name=${CONTAINER} && docker stop ${CONTAINER} || true
-          docker ps -aq --filter name=${CONTAINER} && docker rm ${CONTAINER} || true
+          set -eux
+          docker ps -q --filter "name=${CONTAINER}" && docker stop ${CONTAINER} || true
+          docker ps -aq --filter "name=${CONTAINER}" && docker rm ${CONTAINER} || true
 
-          # ejecutar nueva versión
-          docker run -d --name ${CONTAINER} -p ${PORT_HOST}:${PORT_CONT} ${IMAGE}
+          docker run -d --name ${CONTAINER} -p ${PORT_HOST}:${PORT_CONT} ${IMAGE_LATEST}
         '''
       }
     }
@@ -48,7 +71,7 @@ pipeline {
 
   post {
     success {
-      echo "✅ Deploy listo: http://localhost:${PORT_HOST}"
+      echo "✅ Deploy OK: http://localhost:${PORT_HOST}"
     }
     failure {
       echo "❌ Falló el pipeline."
