@@ -9,8 +9,8 @@ pipeline {
     IMAGE_SHA    = "${APP_NAME}:sha-${env.GIT_COMMIT}"
 
     CONTAINER = "${APP_NAME}"
-    PORT_HOST = "8081"   // cambiá si necesitás otro
-    PORT_CONT = "80"     // Nginx expone 80 en la imagen final
+    PORT_HOST = "8081"
+    PORT_CONT = "80"
   }
 
   stages {
@@ -18,12 +18,48 @@ pipeline {
       steps { checkout scm }
     }
 
+    stage('Detect paths') {
+      steps {
+        sh '''
+          set -eux
+
+          # Detectar carpeta con package.json (evitando node_modules)
+          if [ -f package.json ]; then
+            APP_DIR="."
+          else
+            APP_DIR="$(find . -maxdepth 3 -type f -name package.json -not -path "*/node_modules/*" -print -quit | xargs -r dirname || true)"
+            [ -z "${APP_DIR}" ] && { echo "No se encontró package.json"; exit 1; }
+          fi
+
+          # Detectar carpeta con Dockerfile
+          if [ -f Dockerfile ]; then
+            DOCKER_CTX="."
+          else
+            DOCKER_CTX="$(find . -maxdepth 3 -type f -name Dockerfile -print -quit | xargs -r dirname || true)"
+            [ -z "${DOCKER_CTX}" ] && { echo "No se encontró Dockerfile"; exit 1; }
+          fi
+
+          echo "APP_DIR=${APP_DIR}"         >  .ci-paths.env
+          echo "DOCKER_CTX=${DOCKER_CTX}"  >> .ci-paths.env
+          echo ">> APP_DIR=${APP_DIR}"
+          echo ">> DOCKER_CTX=${DOCKER_CTX}"
+          echo ">> Contenido APP_DIR:"
+          ls -la "${APP_DIR}"
+          echo ">> Contenido DOCKER_CTX:"
+          ls -la "${DOCKER_CTX}"
+        '''
+      }
+    }
+
     stage('NPM validate (in Docker)') {
       steps {
         sh '''
           set -eux
+          . ./.ci-paths.env
+
+          # Montar solo APP_DIR en /app
           docker run --rm \
-            -v "$PWD":/app -w /app \
+            -v "$PWD/${APP_DIR}":/app -w /app \
             -e CI=true \
             node:20-alpine sh -lc "
               if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
@@ -41,7 +77,10 @@ pipeline {
       steps {
         sh '''
           set -eux
-          docker build -t ${IMAGE_LATEST} -t ${IMAGE_SHA} .
+          . ./.ci-paths.env
+
+          # Build usando el contexto donde está el Dockerfile
+          docker build -t ${IMAGE_LATEST} -t ${IMAGE_SHA} "${DOCKER_CTX}"
         '''
       }
     }
