@@ -26,7 +26,11 @@ pipeline {
             -v "$PWD":/app -w /app \
             -e CI=true \
             node:20-alpine sh -lc "
-              npm ci &&
+              if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+                npm ci
+              else
+                npm install
+              fi &&
               npm run build
             "
         '''
